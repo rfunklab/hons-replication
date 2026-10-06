@@ -9,6 +9,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import pandas as pd
 
@@ -25,9 +26,8 @@ LABELS = {
 ALTERNATIVES = list(LABELS)[1:]
 METRICS = ["H1_finite_per_1k_edges", "H2_finite_per_1k_triangles",
            "H1_total_finite_persistence_per_1k_edges", "H2_total_finite_persistence_per_1k_triangles"]
-TITLES = ["H1 finite features per 1,000 edges", "H2 finite features per 1,000 triangles",
-          "H1 lifetime sum: years per 1,000 edges", "H2 lifetime sum: years per 1,000 triangles"]
-COLORS = {METHOD: "#d87559", "marginal_likelihood": "#467b76", "noise_corrected_variance": "#24495b"}
+TITLES = ["H1 feature density", "H2 feature density", "H1 total persistence", "H2 total persistence"]
+COLORS = {METHOD: "#FF6F61", "marginal_likelihood": "#2A9D8F", "noise_corrected_variance": "#264653"}
 
 
 def calculate_metrics(networks):
@@ -64,11 +64,17 @@ def summarize(measures):
 def plot_applied_math(measures, survival):
     """Figure 12: normalized aggregates and finite-lifetime survival profiles."""
     applied = measures[measures.field_code == "102"].set_index("method").loc[list(LABELS)]
-    fig, axes = plt.subplots(3, 2, figsize=(13, 12), layout="constrained")
+    fig, axes = plt.subplots(3, 2, figsize=(10, 12), layout="constrained")
     for panel, (ax, metric, title) in enumerate(zip(axes.flat, METRICS, TITLES)):
-        ax.barh(range(11), applied[metric], color=[COLORS.get(m, "#bdc8ca") for m in LABELS])
-        ax.set_yticks(range(11), LABELS.values(), fontsize=8)
+        ax.hlines(range(11), 0, applied[metric], color="#CCCCCC", lw=0.7)
+        for y, method in enumerate(LABELS):
+            marker = "D" if method == METHOD else "s" if method == "noise_corrected_variance" else "o"
+            ax.scatter(applied.loc[method, metric], y, marker=marker,
+                       s=28 if method == METHOD else 23, color=COLORS.get(method, "#CCCCCC"), zorder=3)
+        ax.set_yticks(range(11), list(LABELS.values()) if panel % 2 == 0 else [""] * 11, fontsize=9)
         ax.invert_yaxis()
+        units = "Features" if panel < 2 else "Years"
+        ax.set_xlabel(f"{units} per 1,000 " + ("edges" if panel % 2 == 0 else "triangles"))
         ax.set_title(f"({chr(97 + panel)}) {title}", fontsize=11, loc="left")
         ax.set_axisbelow(True)
         ax.grid(axis="x", alpha=0.2)
@@ -78,8 +84,10 @@ def plot_applied_math(measures, survival):
             curve = survival[(survival.method == method) & (survival.dimension == k)]
             curve = curve.sort_values("min_lifetime_years")
             density = 1000 * curve.finite_count / curve.denominator.where(curve.denominator > 0)
-            ax.plot(curve.min_lifetime_years, density, color=COLORS.get(method, "#bdc8ca"),
-                    lw=1.8 if method in COLORS else 0.9,
+            ax.step(curve.min_lifetime_years, density, where="pre",
+                    color=COLORS.get(method, "#CCCCCC"),
+                    lw=1.9 if method == METHOD else 1.25 if method in COLORS else 0.65,
+                    ls="--" if method == "noise_corrected_variance" else "-",
                     label=LABELS[method] if method in COLORS else None)
         ax.set(xlim=(0, 40), ylim=(0, None), xlabel="Minimum finite lifetime (years)",
                ylabel=f"Finite H{k} features per 1,000 " + ("edges" if k == 1 else "triangles"))
@@ -98,7 +106,8 @@ def plot_across_fields(summary):
     medians = medians.loc[ALTERNATIVES, METRICS]
     counts = summary.pivot(index="alternative", columns="metric", values="n_R").loc[ALTERNATIVES, METRICS]
     fig, ax = plt.subplots(figsize=(11, 7), layout="constrained")
-    plot = ax.imshow(np.log2(medians), cmap="YlGnBu", vmin=0, vmax=4, aspect="auto")
+    cmap = LinearSegmentedColormap.from_list("comparison", ["#264653", "#FFFFFF", "#FF6F61"])
+    plot = ax.imshow(np.log2(medians), cmap=cmap, vmin=-4, vmax=4, aspect="auto")
     ax.set_yticks(range(10), [LABELS[m] for m in ALTERNATIVES])
     ax.set_xticks(range(4), ["H1 feature\ndensity", "H2 feature\ndensity",
                              "H1 normalized\ntotal persistence", "H2 normalized\ntotal persistence"])
@@ -107,9 +116,10 @@ def plot_across_fields(summary):
         for j in range(4):
             ratio = medians.iloc[i, j]
             ax.text(j, i, f"{ratio:.2f}×\n(n={counts.iloc[i, j]})", ha="center", va="center",
-                    fontsize=10, color="white" if np.log2(ratio) > 2.2 else "#142d38")
-    colorbar = fig.colorbar(plot, ax=ax, shrink=0.8, ticks=range(5))
-    colorbar.ax.set_yticklabels(["1×", "2×", "4×", "8×", "16×"])
+                    fontsize=10, color="#2B2B2B")
+    colorbar = fig.colorbar(plot, ax=ax, orientation="horizontal", shrink=0.75,
+                            pad=0.08, ticks=[-4, -2, 0, 2, 4])
+    colorbar.ax.set_xticklabels(["1/16×", "1/4×", "1× = equal", "4×", "16×"])
     colorbar.set_label("Median topological-thresholding / alternative ratio")
     fig.suptitle("Cross-field comparison · Figure 13\n"
                  "Positive pairs determine ratios; Table F2 CSV also includes defined zero outcomes", fontsize=13)

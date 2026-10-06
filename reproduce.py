@@ -9,7 +9,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
 import numpy as np
 import pandas as pd
 
@@ -75,44 +75,73 @@ def calculate():
 
 
 def plot(grid, selections):
-    """One overview of the three reproduced analyses; axes show grid indices."""
-    plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10), layout="constrained")
+    """Draw Figures 8, 9 and 11 on the manuscript's selectable grid."""
+    plt.rcParams.update({"font.size": 11, "axes.labelsize": 11,
+                         "xtick.labelsize": 10, "ytick.labelsize": 10})
+    palette = LinearSegmentedColormap.from_list("charcoal", ["#eff2f2", "#264653"])
+    lower = grid.groupby("lower_index").lower.first().to_numpy()
+    upper = grid.groupby("upper_index").upper.first().to_numpy()
     highlighted = selections[selections.kind == "highlighted"]
-    for ax, metric, title in zip(axes.flat, ["score", "features", "variance", "sweep"],
-                                ["Local-change score · Figure 8a", "H1 + H2 features · Figure 8b",
-                                 "Higher-order variance · Figure 11", "Constraint sweep · Figure 9"]):
-        if metric == "sweep":
-            sweep = selections[selections.kind == "sweep"].dropna(subset=["score"])
-            counts = sweep.groupby(["upper_index", "lower_index"]).size()
-            ax.scatter(counts.index.get_level_values(1), counts.index.get_level_values(0),
-                       s=counts.to_numpy() * 16, color="#db7866", alpha=.8)
-            for (i, j), count in counts.nlargest(3).items():
-                ax.annotate(str(count), (j, i), ha="center", va="center", fontsize=9)
-            ax.text(.02, .97, f"{len(sweep)} feasible settings; {len(counts)} selected cells\nBubble area = selection count",
-                    transform=ax.transAxes, va="top", fontsize=9)
-        else:
-            values = grid.H1 + grid.H2 if metric == "features" else grid[metric]
-            matrix = values.to_numpy().reshape(16, 9)
-            matrix = np.ma.masked_invalid(matrix)
-            if metric != "features":
-                matrix[:, 0] = np.ma.masked
-            shown = ax.imshow(matrix, origin="lower", aspect="auto", cmap="viridis",
-                              norm=LogNorm(vmin=float(matrix[matrix > 0].min()), vmax=float(matrix.max())))
-            colorbar = fig.colorbar(shown, ax=ax, shrink=.8)
-            colorbar.ax.tick_params(labelsize=8)
-            for row, marker in zip(highlighted.itertuples(), ["*", "+", "o"]):
-                ax.scatter(row.lower_index, row.upper_index, marker=marker, s=90,
-                           color="white", linewidth=1.5)
-        ax.set(title=title, xlabel="Lower frequency threshold (articles)",
-               ylabel="Upper frequency threshold (articles)", xlim=(-.5, 8.5), ylim=(-.5, 15.5))
-        lower = grid.groupby("lower_index").lower.first()
-        upper = grid.groupby("upper_index").upper.first()
-        ax.set_xticks(range(9), [f"{x:.1f}" for x in lower], rotation=45)
-        ax.set_yticks([0, 3, 6, 9, 12, 15], [f"{upper[i]:,.0f}" for i in [0, 3, 6, 9, 12, 15]])
-    fig.suptitle("Applied Mathematics: selections from the saved persistence diagrams\n"
-                 "Markers: star = 25/25; plus = 50/25; dot = 75/50 constraints", fontsize=13)
-    fig.savefig(OUTPUT / "applied_math.png", dpi=170)
+
+    def heatmap(ax, metric, title):
+        values = grid.H1 + grid.H2 if metric == "features" else grid[metric]
+        matrix = values.to_numpy().reshape(len(upper), len(lower))[:, 1:]
+        norm = LogNorm(vmin=matrix.min(), vmax=matrix.max()) if metric == "variance" else None
+        shown = ax.imshow(matrix, origin="lower", aspect="auto", cmap=palette,
+                          norm=norm, interpolation="nearest")
+        ax.set(title=title, xlabel="Lower bound ℓ (articles)", ylabel="Upper bound u (articles)")
+        ax.set_box_aspect(1)
+        ax.set_xticks(range(len(lower) - 1),
+                      [f"{x:.1f}" if i in {0, 2, 5, 7} else "" for i, x in enumerate(lower[1:])])
+        ax.set_yticks(range(len(upper)),
+                      ["No upper\ncutoff" if i == len(upper) - 1 else
+                       f"{x:.1f}" if i % 2 == 0 else "" for i, x in enumerate(upper)])
+        ax.tick_params(length=2)
+        colorbar = ax.figure.colorbar(shown, ax=ax, fraction=.046, pad=.035)
+        colorbar.ax.tick_params(labelsize=9)
+
+    def markers(ax):
+        for row, marker, size in zip(highlighted.itertuples(), ["*", "P", "o"], [150, 85, 55]):
+            ax.scatter(row.lower_index - 1, row.upper_index, marker=marker, s=size,
+                       color="#2b2b2b", edgecolors="white", linewidth=.8, zorder=5)
+
+    # The first lower-bound column supplies neighbors but is not selectable.
+    marker_key = "H₁/H₂ constraint percentiles: star 25/25 · plus 50/25 · dot 75/50"
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5.4), layout="constrained")
+    for ax, metric, title in zip(axes, ["score", "features"],
+                                ["Figure 8a · Local-change score", "Figure 8b · H₁ + H₂ features"]):
+        heatmap(ax, metric, title)
+        markers(ax)
+    fig.supxlabel(marker_key, fontsize=11)
+    fig.savefig(OUTPUT / "applied_math_selections.png", dpi=170)
+    plt.close(fig)
+
+    sweep = selections[selections.kind == "sweep"].dropna(subset=["score"]).copy()
+    sweep["strictness"] = sweep.percentile_H1 + sweep.percentile_H2
+    bubbles = sweep.groupby(["upper_index", "lower_index"]).agg(
+        count=("strictness", "size"), strictness=("strictness", "mean")).reset_index()
+    lo, hi = sweep.strictness.min(), sweep.strictness.max()
+    shade = (bubbles.strictness - lo) / (hi - lo)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5.4), layout="constrained")
+    for ax, metric, title in zip(axes, ["score", "features"],
+                                ["Figure 9a · Local-change score", "Figure 9b · H₁ + H₂ features"]):
+        heatmap(ax, metric, title)
+        ax.scatter(bubbles.lower_index - 1, bubbles.upper_index, s=bubbles["count"] * 17,
+                   c=shade, cmap="gray_r", vmin=-.4, vmax=1.15,
+                   edgecolors="#2b2b2b", linewidths=.6, zorder=5)
+    for row in bubbles.nlargest(3, "count").itertuples():
+        axes[0].annotate(str(row.count), (row.lower_index - 1, row.upper_index),
+                         xytext=(11, 0), textcoords="offset points", va="center", fontsize=10)
+    fig.supxlabel(f"{len(sweep)} feasible settings · {len(bubbles)} selected cells\n"
+                  "Bubble area = number of selections; darker bubbles = stricter constraints", fontsize=11)
+    fig.savefig(OUTPUT / "applied_math_sweep.png", dpi=170)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.4), layout="constrained")
+    heatmap(ax, "variance", "Figure 11 · Higher-order variance")
+    markers(ax)
+    fig.supxlabel(marker_key, fontsize=9)
+    fig.savefig(OUTPUT / "applied_math_variance.png", dpi=170)
     plt.close(fig)
 
 
